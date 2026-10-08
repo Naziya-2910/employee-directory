@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: employee-directory
+  labels:
+    app: employee-directory
+spec:
+  type: LoadBalancer
+  selector:
+    app: employee-directory
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

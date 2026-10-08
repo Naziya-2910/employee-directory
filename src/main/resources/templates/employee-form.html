@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title th:text="${pageTitle} + ' | Employee Directory'">Employee form | Employee Directory</title>
+    <link rel="stylesheet" th:href="@{/css/app.css}">
+</head>
+<body>
+<div class="app-shell">
+    <header th:replace="~{fragments :: header}"></header>
+    <main class="page-content form-page">
+        <a class="back-link" th:href="@{/employees}">&larr; Back to directory</a>
+        <section class="form-card">
+            <div class="form-heading">
+                <p class="eyebrow">EMPLOYEE DETAILS</p>
+                <h1 th:text="${pageTitle}">Add employee</h1>
+                <p class="subtitle">Add the details below to keep your directory up to date.</p>
+            </div>
+            <form method="post" th:action="${formAction}" th:object="${employeeForm}">
+                <div class="form-field">
+                    <label for="employeeId">Employee ID</label>
+                    <input id="employeeId" type="text" th:field="*{employeeId}" placeholder="EMP-1006"
+                           th:readonly="${editing}" aria-describedby="employeeId-error">
+                    <small class="field-error" id="employeeId-error" th:if="${#fields.hasErrors('employeeId')}"
+                           th:errors="*{employeeId}">Please enter a valid employee ID.</small>
+                    <small class="field-hint" th:unless="${editing}">Use the format EMP-1001.</small>
+                </div>
+                <div class="form-field">
+                    <label for="name">Full name</label>
+                    <input id="name" type="text" th:field="*{name}" placeholder="e.g. Alex Morgan"
+                           autocomplete="name" aria-describedby="name-error">
+                    <small class="field-error" id="name-error" th:if="${#fields.hasErrors('name')}" th:errors="*{name}">Name is required.</small>
+                </div>
+                <div class="form-field">
+                    <label for="department">Department</label>
+                    <select id="department" th:field="*{department}" aria-describedby="department-error">
+                        <option value="">Select a department</option>
+                        <option th:each="item : ${departments}" th:value="${item}" th:text="${item}">Engineering</option>
+                    </select>
+                    <small class="field-error" id="department-error" th:if="${#fields.hasErrors('department')}" th:errors="*{department}">Choose a department.</small>
+                </div>
+                <div class="form-field">
+                    <label for="designation">Designation</label>
+                    <input id="designation" type="text" th:field="*{designation}" placeholder="e.g. Product Designer"
+                           aria-describedby="designation-error">
+                    <small class="field-error" id="designation-error" th:if="${#fields.hasErrors('designation')}" th:errors="*{designation}">Designation is required.</small>
+                </div>
+                <div class="form-field">
+                    <label for="email">Work email</label>
+                    <input id="email" type="email" th:field="*{email}" placeholder="name@company.com"
+                           autocomplete="email" aria-describedby="email-error">
+                    <small class="field-error" id="email-error" th:if="${#fields.hasErrors('email')}" th:errors="*{email}">Enter a valid email.</small>
+                </div>
+                <div class="form-actions">
+                    <a class="button button-secondary" th:href="@{/employees}">Cancel</a>
+                    <button class="button button-primary" type="submit" th:text="${editing ? 'Save changes' : 'Add employee'}">Add employee</button>
+                </div>
+            </form>
+        </section>
+    </main>
+    <footer th:replace="~{fragments :: footer}"></footer>
+</div>
+</body>
+</html>

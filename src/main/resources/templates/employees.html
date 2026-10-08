@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Employees | Employee Directory</title>
+    <link rel="stylesheet" th:href="@{/css/app.css}">
+</head>
+<body>
+<div class="app-shell">
+    <header th:replace="~{fragments :: header}"></header>
+    <main class="page-content">
+        <section class="page-heading">
+            <div>
+                <p class="eyebrow">DIRECTORY</p>
+                <h1>Everyone on your team.</h1>
+                <p class="subtitle">Search, filter, and manage your employee directory.</p>
+            </div>
+            <a class="button button-primary" th:href="@{/employees/new}"><span aria-hidden="true">+</span> Add employee</a>
+        </section>
+
+        <div class="flash-message" th:if="${successMessage}" role="status" th:text="${successMessage}"></div>
+
+        <section class="panel directory-panel">
+            <form class="filter-form" method="get" th:action="@{/employees}">
+                <label class="search-field">
+                    <span class="visually-hidden">Search employees</span>
+                    <span class="search-icon" aria-hidden="true">&#9906;</span>
+                    <input type="search" name="q" placeholder="Search by name, role, email..." th:value="${q}">
+                </label>
+                <label class="filter-select">
+                    <span class="visually-hidden">Filter by department</span>
+                    <select name="department">
+                        <option value="">All departments</option>
+                        <option th:each="item : ${departments}" th:value="${item}" th:text="${item}"
+                                th:selected="${item == selectedDepartment}">Engineering</option>
+                    </select>
+                </label>
+                <button class="button button-secondary" type="submit">Apply filters</button>
+                <a class="clear-link" th:href="@{/employees}">Clear</a>
+            </form>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th scope="col">EMPLOYEE</th>
+                        <th scope="col">EMPLOYEE ID</th>
+                        <th scope="col">DEPARTMENT</th>
+                        <th scope="col">EMAIL</th>
+                        <th scope="col"><span class="visually-hidden">Actions</span></th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr th:each="employee : ${employees}">
+                        <td>
+                            <div class="table-person">
+                                <span class="avatar avatar-small" th:text="${#strings.substring(employee.name(), 0, 1)}">A</span>
+                                <span><strong th:text="${employee.name()}">Amara Patel</strong>
+                                    <small th:text="${employee.designation()}">Software Engineer</small></span>
+                            </div>
+                        </td>
+                        <td><span class="employee-id" th:text="${employee.employeeId()}">EMP-1001</span></td>
+                        <td><span class="department-pill" th:text="${employee.department()}">Engineering</span></td>
+                        <td><a class="email-link" th:href="'mailto:' + ${employee.email()}" th:text="${employee.email()}">person@example.com</a></td>
+                        <td>
+                            <div class="row-actions">
+                                <a class="action-link" th:href="@{/employees/{id}/edit(id=${employee.employeeId()})}">Edit</a>
+                                <form method="post" th:action="@{/employees/{id}/delete(id=${employee.employeeId()})}"
+                                      onsubmit="return confirm('Delete this employee?');">
+                                    <button class="action-link action-delete" type="submit">Delete</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr th:if="${#lists.isEmpty(employees)}">
+                        <td class="empty-state" colspan="5">No employees found. Try changing your search or filters.</td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="table-summary" th:text="${#lists.size(employees)} + ' employee(s) shown'">5 employees shown</p>
+        </section>
+    </main>
+    <footer th:replace="~{fragments :: footer}"></footer>
+</div>
+</body>
+</html>

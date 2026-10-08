@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dashboard | Employee Directory</title>
+    <link rel="stylesheet" th:href="@{/css/app.css}">
+</head>
+<body>
+<div class="app-shell">
+    <header th:replace="~{fragments :: header}"></header>
+    <main class="page-content">
+        <section class="page-heading">
+            <div>
+                <p class="eyebrow">OVERVIEW</p>
+                <h1>Your people, at a glance.</h1>
+                <p class="subtitle">A simple directory for keeping your team connected.</p>
+            </div>
+            <a class="button button-primary" th:href="@{/employees/new}"><span aria-hidden="true">+</span> Add employee</a>
+        </section>
+
+        <section class="notice" aria-label="Demo data notice">
+            <span class="notice-icon" aria-hidden="true">i</span>
+            <p><strong>Demo mode:</strong> employee data lives in this application's memory. It resets when the app restarts and is not shared between replicas.</p>
+        </section>
+
+        <section class="stats-grid" aria-label="Employee counts by department">
+            <article class="stat-card stat-card-total">
+                <p class="stat-label">TOTAL EMPLOYEES</p>
+                <p class="stat-number" th:text="${employeeCount}">5</p>
+                <p class="stat-caption">Across all departments</p>
+            </article>
+            <article class="stat-card" th:each="department : ${departments}">
+                <p class="stat-label" th:text="${department}">Engineering</p>
+                <p class="stat-number" th:text="${departmentCounts[department] ?: 0}">2</p>
+                <p class="stat-caption">Team members</p>
+            </article>
+        </section>
+
+        <section class="panel">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">YOUR TEAM</p>
+                    <h2>Meet the people</h2>
+                </div>
+                <a class="text-link" th:href="@{/employees}">View directory <span aria-hidden="true">&rarr;</span></a>
+            </div>
+            <div class="people-grid">
+                <article class="person-card" th:each="employee : ${employees}">
+                    <span class="avatar" th:text="${#strings.substring(employee.name(), 0, 1)}">A</span>
+                    <div>
+                        <h3 th:text="${employee.name()}">Amara Patel</h3>
+                        <p th:text="${employee.designation()}">Software Engineer</p>
+                        <span class="department-pill" th:text="${employee.department()}">Engineering</span>
+                    </div>
+                </article>
+            </div>
+        </section>
+    </main>
+    <footer th:replace="~{fragments :: footer}"></footer>
+</div>
+</body>
+</html>

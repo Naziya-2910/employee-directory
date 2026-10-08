@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<body>
+<header class="site-header" th:fragment="header">
+    <a class="brand" th:href="@{/}" aria-label="Employee Directory home">
+        <span class="brand-mark">E</span>
+        <span>Employee Directory<span class="brand-subtitle">EMPLOYEE DIRECTORY</span></span>
+    </a>
+    <nav aria-label="Main navigation">
+        <a th:href="@{/}">Dashboard</a>
+        <a th:href="@{/employees}">Employees</a>
+    </nav>
+</header>
+<footer class="site-footer" th:fragment="footer">
+    <p>Employee Directory</p>
+    <p class="release">Version <strong th:text="${appVersion}">1.0.0</strong>
+        <span class="footer-divider">&middot;</span>
+        Git commit <code th:text="${gitCommit}">unknown</code></p>
+</footer>
+</body>
+</html>
