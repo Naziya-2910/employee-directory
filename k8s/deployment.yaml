@@ -30,7 +30,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: employee-directory
-          image: ACCOUNT_ID.dkr.ecr.AWS_REGION.amazonaws.com/ECR_REPOSITORY:IMAGE_TAG
+          image: 822426641221.dkr.ecr.ap-south-1.amazonaws.com/ecr:1-fd2b61a
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
