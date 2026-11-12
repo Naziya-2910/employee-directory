@@ -221,10 +221,11 @@ kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.pas
 Open the UI through a port-forward:
 
 ```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
+kubectl port-forward --address 0.0.0.0 \
+  svc/argocd-server -n argocd 8081:443
 ```
 
-Then browse to https://localhost:8080. Chrome warns "Your connection is not private" because Argo CD uses a self-signed certificate; click **Advanced**, then **Proceed**.
+The port-forward listens on all interfaces of the instance, so open `https://<ec2-public-ip>:8081` in your browser (or https://localhost:8081 from the instance itself). Allow inbound TCP 8081 in the instance's security group for your own IP only, and keep the command running in its terminal (`Ctrl+C` stops it). Chrome warns "Your connection is not private" because Argo CD uses a self-signed certificate; click **Advanced**, then **Proceed**.
 
 ## 5. Configure Jenkins
 
@@ -432,7 +433,7 @@ kubectl describe pod -n employee-directory -l app=employee-directory
 ## 13. Security notes
 
 - Never commit tokens, AWS keys or passwords. Keep them in Jenkins credentials.
-- Restrict ports 8080, 9000 and any NodePort to your own IP.
+- Restrict ports 8080 (Jenkins), 8081 (Argo CD port-forward), 9000 (SonarQube) and any NodePort to your own IP.
 - Remember that the Jenkins pipeline pushes to `main`. Use a token limited to this repository.
 - If SonarQube's public IP changes after a restart, update the server URL in Jenkins, or give the instance an Elastic IP.
 
