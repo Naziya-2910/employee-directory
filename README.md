@@ -34,161 +34,414 @@ Employee records are held only in process memory. They reset on application rest
 
 The `GET /healthz` endpoint is a lightweight infrastructure health check (`{"status":"UP"}`), not a business API. The page footer displays the Maven application version and the Git commit used to build that release.
 
-## Run locally with Maven
+# Employee Directory: CI/CD on Amazon EKS with Jenkins, Docker and Argo CD
 
-Java 21 is required. From the repository root:
+A Java 21 / Spring Boot web application deployed to Amazon EKS through a GitOps pipeline:
 
-```sh
-./mvnw clean verify
-java -jar target/employee-directory.jar
+```
+Developer
+   |  git push
+   v
+GitHub (this repo)
+   |
+   v
+Jenkins pipeline: Maven build + tests -> SonarQube -> Docker build -> Trivy scan -> push to ECR
+   |
+   v
+Jenkins commits the new image tag to k8s/deployment.yaml (GitOps)
+   |
+   v
+Argo CD detects the commit and syncs the cluster
+   |
+   v
+Amazon EKS  ->  LoadBalancer Service  ->  Browser
 ```
 
-On Windows PowerShell, use `.\mvnw.cmd clean verify` and then `java -jar target\employee-directory.jar`. Open <http://localhost:8080>. The test suite covers employee validation, search and filtering, department counts, and create/update/delete operations.
-
-The application version is the Maven project version in `pom.xml` (`1.0.0`). CI injects the checked-out Git commit with `-Dgit.commit.id=...`; a local build without that property shows `unknown`.
-
-## Build and run the Docker image
-
-Build the JAR first; Docker intentionally does not run Maven and does not use a multi-stage build.
-
-```sh
-./mvnw clean verify
-docker build -t employee-directory:local .
-docker run --rm -p 8080:8080 employee-directory:local
-```
-
-The Dockerfile has exactly one `FROM`, uses the Java 21 Eclipse Temurin JRE runtime, copies `target/employee-directory.jar`, runs as UID/GID `10001`, and listens on port `8080`. `.dockerignore` does not exclude the packaged JAR. The `--rm` option above uses two normal ASCII hyphens.
-
-## ECR and EKS prerequisites
-
-The AWS resources are **not** created by this project or pipeline. Before running a deployment, an administrator must provide:
-
-1. An existing ECR repository in the selected account and region.
-2. An existing EKS cluster, worker nodes, and network access to ECR.
-3. A cluster version/provider setup that supports `Service` type `LoadBalancer`, with correctly tagged subnets and the required AWS load-balancer integration. Public subnets and an internet gateway are needed for an internet-facing endpoint.
-4. The Jenkins EC2 instance and the EKS worker/node IAM role configured as described below.
-5. A reachable Jenkins URL and an agent with the prerequisites in the Jenkins section.
-
-### Jenkins EC2 IAM role: AWS API permissions
-
-Attach an instance profile to the Jenkins EC2 instance; do not put AWS access keys in Jenkins credentials, the Jenkinsfile, or repository files. Use least privilege and scope ECR actions to the selected repository:
-
-- `ecr:GetAuthorizationToken` (AWS requires `Resource: "*"`)
-- `ecr:BatchCheckLayerAvailability`, `ecr:CompleteLayerUpload`, `ecr:InitiateLayerUpload`, `ecr:PutImage`, and `ecr:UploadLayerPart` on the ECR repository ARN
-- `eks:DescribeCluster` on the selected EKS cluster ARN
-- `sts:GetCallerIdentity` for the Jenkins identity check
-
-The Jenkins role's ECR permissions are for **pushing** releases. Separately, the EKS worker/node IAM role needs ECR pull permissions (`ecr:GetAuthorizationToken`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, and `ecr:BatchCheckLayerAvailability`) so kubelet can pull private images. A common AWS-managed policy for the node role is `AmazonEC2ContainerRegistryPullOnly`; scope permissions according to your account policy.
-
-### EKS access and Kubernetes RBAC are separate
-
-AWS IAM authorization to call AWS APIs is not by itself permission to change Kubernetes objects. Configure an EKS access entry (or the cluster's existing identity mapping) for the Jenkins EC2 role, then grant Kubernetes access separately:
-
-- Jenkins must be able to authenticate to the cluster and manage the selected namespace's Deployment and Service, inspect pods/events, and read pod logs for rollout verification/diagnostics.
-- Because this pipeline applies `k8s/namespace.yaml`, the role also needs permission to create/update that Namespace at cluster scope. Alternatively, have an administrator pre-create the namespace and grant the Jenkins identity only the required namespace-scoped access, then adjust the namespace-apply stage to match that policy.
-- Prefer a dedicated namespace-scoped RBAC role/group for routine release operations rather than cluster-admin. Do not confuse the EKS cluster's AWS IAM role, the EC2 instance profile, worker-node image-pull permissions, and Kubernetes user RBAC; they serve different purposes.
-
-## Jenkins setup
-
-The Jenkins agent that runs the pipeline needs:
-
-- Java 21 (to run the Maven Wrapper and application build)
-- Git
-- Docker CLI and a running Docker daemon, with permission for the Jenkins agent user to build and push images
-- AWS CLI v2, using the EC2 instance profile
-- `kubectl`, compatible with the EKS cluster version
-- Network reachability to GitHub, ECR, the EKS API endpoint, and the Docker registry
-
-Install/configure Jenkins Pipeline, Git, and GitHub integration plugins. Configure a Pipeline job to use this GitHub repository and the repository's `Jenkinsfile`. Do not store AWS keys in Jenkins credentials.
-
-### Parameters
-
-| Parameter | Purpose | Example |
-| --- | --- | --- |
-| `AWS_ACCOUNT_ID` | 12-digit account owning the ECR repository | `123456789012` |
-| `AWS_REGION` | Shared AWS region for ECR and EKS | `us-east-1` |
-| `ECR_REPOSITORY` | Existing ECR repository name | `employee-directory` |
-| `EKS_CLUSTER` | Existing cluster name | `employee-directory-eks` |
-| `K8S_NAMESPACE` | Namespace to deploy into | `employee-directory` |
-
-Enter your own account, region, repository, cluster, and namespace values. The pipeline tags each image as `<12-character-git-commit>-<jenkins-build-number>`; it never deploys `latest`. Concurrent pipeline runs are disabled so two releases cannot race to update the Deployment. A test/build failure, Docker build or push failure, kubectl failure, or unsuccessful rollout fails the build. Deployment failures print current resources, Deployment details, events, pod logs, and rollout history.
-
-### GitHub webhook and manual builds
-
-For push-triggered builds, configure the Jenkins GitHub webhook endpoint in the GitHub repository:
-
-```text
-https://<your-jenkins-host>/github-webhook/
-```
-
-Enable push events, ensure the endpoint is reachable from GitHub, and enable the GitHub push trigger for the job. The `githubPush()` trigger is declared in the Jenkinsfile. A GitHub webhook does not replace repository/job SCM configuration.
-
-For a manual build, open the Jenkins Pipeline job, choose **Build with Parameters**, enter the five values above, and start the build. This is also a useful fallback when webhook delivery is unavailable.
-
-## Kubernetes resources and behavior
-
-Only three application manifests are provided:
-
-- `k8s/namespace.yaml`
-- `k8s/deployment.yaml` (one replica, rolling update, resource bounds, security context, and startup/readiness/liveness probes)
-- `k8s/service.yaml` (AWS `LoadBalancer` Service)
-
-The Deployment has an image placeholder. Jenkins substitutes the release's exact ECR URI before applying the Deployment, then checks that both the Deployment and ready pods use the exact URI. The application process shuts down gracefully. A rolling update with `maxSurge: 1` may run two pods temporarily; they do not share in-memory employee data.
-
-## Inspect and operate the deployment
-
-Set the namespace to the one used by the Jenkins job:
-
-```sh
-kubectl get pods -n employee-directory -o wide
-kubectl get services -n employee-directory
-kubectl get service employee-directory -n employee-directory -w
-kubectl logs deployment/employee-directory -n employee-directory
-kubectl describe pod -l app=employee-directory -n employee-directory
-kubectl get events -n employee-directory --sort-by=.lastTimestamp
-kubectl rollout history deployment/employee-directory -n employee-directory
-kubectl rollout status deployment/employee-directory -n employee-directory --timeout=300s
-```
-
-The `LoadBalancer` Service's external hostname/address may take a few minutes to appear. Browse to `http://<EXTERNAL-IP-or-hostname>/` once provisioned.
-
-### Manual rollback
-
-Review the revisions and roll back one revision, then verify rollout completion:
-
-```sh
-kubectl rollout history deployment/employee-directory -n employee-directory
-kubectl rollout undo deployment/employee-directory -n employee-directory
-kubectl rollout status deployment/employee-directory -n employee-directory --timeout=300s
-kubectl get deployment employee-directory -n employee-directory \
-  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
-```
-
-Use `kubectl rollout undo ... --to-revision=<number>` to select a specific history entry. A rollback restores the prior pod template/image, not lost in-memory edits. Any pod replacement resets that pod's employee data.
-
-## Common failures
-
-| Symptom | Checks |
+| Tool | Purpose |
 | --- | --- |
-| Maven build errors | Check Java is version 21 (`java -version`), wrapper/network access to Maven Central, compiler/test output, and `target/surefire-reports/`. Run `./mvnw clean verify` locally. |
-| ECR access denied | Confirm the instance profile is attached, `aws sts get-caller-identity` shows the expected role/account, region/account/repository parameters are correct, and the role has ECR push actions on that repository. |
-| `ImagePullBackOff` | Check the exact Deployment image URI/tag exists in the selected ECR repository, node role has ECR pull permissions, cluster nodes can reach ECR, and the image is compatible with the node CPU architecture. Inspect `kubectl describe pod ...` events. |
-| `CrashLoopBackOff` | Check `kubectl logs ... --previous`, current logs, container exit details, memory limits, Java runtime/image, and that port `8080` is available. |
-| Pods remain `Pending` | Inspect pod events, cluster capacity, CPU/memory requests, node selectors/taints, and available subnet/IP capacity. |
-| Failed startup/readiness/liveness probes | Check pod logs/events, verify the app starts on port `8080`, and confirm `GET /healthz` responds successfully. The startup probe allows up to 150 seconds before restarting a slow startup. |
-| EKS access denied | Check `aws eks update-kubeconfig`, the EKS access entry/identity mapping, and Kubernetes RBAC. ECR/IAM push permissions do not grant permission to patch Kubernetes Deployments. |
-| External Service address stays pending | Check cloud-provider/load-balancer integration, subnet tags, subnet route tables, permissions, and events for the Service. |
+| Jenkins | Runs the CI pipeline and writes the new image tag to Git |
+| Docker | Builds the application image |
+| SonarQube + SonarScanner | Code quality and security analysis |
+| Trivy | Scans the image for vulnerabilities |
+| Amazon ECR | Stores the container images |
+| Argo CD | Deploys whatever is in the `k8s` folder to the cluster |
+| Amazon EKS | Runs the application |
 
-## AWS charges and cleanup
+The app keeps employees in memory only, so records reset whenever a pod restarts.
 
-EKS control planes, EC2 worker nodes, EBS volumes, ECR image storage/data transfer, public IPv4 addresses, and provisioned load balancers can incur AWS charges. Verify current pricing for your region before deploying. A `LoadBalancer` Service can provision billable networking resources.
+## Repository structure
 
-Delete only resources belonging to this demo. The commands below remove the Service and Deployment from the chosen namespace and then the namespace; delete shared ECR repositories or clusters only if you intentionally created them for this demo and no longer need them:
-
-```sh
-kubectl delete service employee-directory -n employee-directory
-kubectl delete deployment employee-directory -n employee-directory
-kubectl delete namespace employee-directory
+```
+employee-directory/
+  src/                  Spring Boot source and tests
+  k8s/
+    namespace.yaml      Namespace
+    deployment.yaml     Deployment (image line is updated by Jenkins)
+    service.yaml        LoadBalancer Service
+  Dockerfile            Runtime image (copies target/employee-directory.jar)
+  Jenkinsfile           CI pipeline
+  pom.xml               Maven build
+  README.md
 ```
 
-AWS cluster, node, ECR, and load-balancer cleanup is intentionally manual and is not performed by Jenkins. Follow your organization's AWS cleanup procedure; inspect dependencies and retained images before deleting any shared resource.
+## Values used in this guide
+
+Set these once in every terminal session. Only the account ID needs editing; do not type the angle brackets.
+
+```bash
+export AWS_REGION=ap-south-1
+export AWS_ACCOUNT_ID=<your-12-digit-account-id>
+export CLUSTER_NAME=my-eks
+export ECR_REPO=ecr
+export NAMESPACE=employee-directory
+```
+
+Whenever a command contains text in `<angle brackets>`, replace it with your real value and remove the brackets. Never paste YAML straight into the terminal; YAML goes in files.
+
+## 1. Prerequisites
+
+- An AWS account and an IAM user or role allowed to use ECR, EKS and EC2.
+- An Ubuntu EC2 instance for Jenkins and SonarQube, with several GB of RAM. Open inbound ports 8080 (Jenkins) and 9000 (SonarQube) only to your own IP.
+- An Amazon EKS cluster (EKS Auto Mode is used here) in the same region, created in the AWS console.
+- A GitHub personal access token with write access to this repo.
+
+Create the ECR repository (the pipeline fails with `repository does not exist` without it):
+
+```bash
+aws ecr create-repository --repository-name $ECR_REPO --region $AWS_REGION
+```
+
+## 2. Install the tools on the Jenkins EC2 instance
+
+**Jenkins.** Install it from the official guide: https://www.jenkins.io/doc/book/installing/linux/#debianubuntu
+
+**Docker.** Jenkins needs Docker to build images:
+
+```bash
+sudo apt-get update
+sudo apt install -y docker.io
+sudo usermod -aG docker jenkins
+sudo systemctl restart jenkins
+```
+
+**SonarQube** (runs as a container; generate a token after first login):
+
+```bash
+docker run -d --name sonarqube --restart unless-stopped -p 9000:9000 sonarqube:latest
+```
+
+**SonarScanner CLI:**
+
+```bash
+sudo apt update
+sudo apt install -y curl unzip openjdk-21-jre
+cd /tmp
+curl -fSL https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.2.0.6438-linux-x64.zip -o sonar-scanner.zip
+sudo unzip -o sonar-scanner.zip -d /opt
+sudo ln -sfn /opt/sonar-scanner-8.2.0.6438-linux-x64 /opt/sonar-scanner
+echo 'export PATH="/opt/sonar-scanner/bin:$PATH"' | sudo tee /etc/profile.d/sonar-scanner.sh
+source /etc/profile.d/sonar-scanner.sh
+sudo -u jenkins /opt/sonar-scanner/bin/sonar-scanner --version
+```
+
+**Trivy** (image vulnerability scanner):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y wget gnupg lsb-release
+sudo mkdir -p /etc/apt/keyrings
+wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /etc/apt/keyrings/trivy.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+sudo apt-get update
+sudo apt-get install -y trivy
+```
+
+**AWS CLI v2:**
+
+```bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+aws configure
+```
+
+**kubectl:**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.37/deb/Release.key | sudo gpg --dearmor --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.37/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt-get install -y kubectl
+kubectl version --client
+```
+
+**Helm 3** (used to install Argo CD):
+
+```bash
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+helm version
+```
+
+## 3. Connect kubectl to the EKS cluster
+
+```bash
+aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+kubectl get nodes
+```
+
+Confirm the cluster type (prints `true` for EKS Auto Mode, which changes the load balancer setup in step 8):
+
+```bash
+aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query 'cluster.computeConfig.enabled'
+```
+
+## 4. Install Argo CD
+
+Add the Argo Helm repository first, then install:
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+helm upgrade --install argocd argo/argo-cd --namespace argocd --create-namespace
+kubectl get pods -n argocd
+```
+
+Wait until every pod is `Running`. Print the first admin password (username `admin`):
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+```
+
+Open the UI through a port-forward:
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+```
+
+Then browse to https://localhost:8080. Chrome warns "Your connection is not private" because Argo CD uses a self-signed certificate; click **Advanced**, then **Proceed**.
+
+## 5. Configure Jenkins
+
+1. **Plugins** (Manage Jenkins, Plugins): Pipeline, Git, SonarQube Scanner, CloudBees AWS Credentials, JUnit.
+2. **SonarQube token:** log in to SonarQube at `http://<sonarqube-host>:9000`, open your avatar, **My Account, Security**, and generate a token. In Jenkins add it as a **Secret text** credential with ID `sonar-token`.
+3. **SonarQube server:** Manage Jenkins, System, **SonarQube servers**. Name it exactly `SonarQubeServer`, set the URL, and select `sonar-token`. A `401 Unauthorized` in the Sonar stage means this token is missing or wrong.
+4. **Credentials** (Manage Jenkins, Credentials):
+   - `git-cred`: Username with password. Username is your GitHub user; the password is the personal access token (needs write access).
+   - `aws-cred`: AWS credentials (access key ID and secret) for the account that owns the ECR repository.
+5. **Pipeline job:** create a Pipeline job, set **Definition** to **Pipeline script from SCM**, SCM Git, repository `https://github.com/Naziya-2910/employee-directory.git`, branch `main`, credentials `git-cred`, script path `Jenkinsfile`.
+
+## 6. The pipeline
+
+The `Jenkinsfile` runs these stages:
+
+| Stage | What it does |
+| --- | --- |
+| Checkout | Clones `main` from GitHub |
+| Set Image Tag | Builds the tag `<build number>-<short commit hash>` |
+| Maven Build and Test | Runs `mvn clean verify` in a Maven Docker container; a failing test stops the build |
+| SonarQube Analysis | Runs `sonar-scanner` against `src` |
+| Build Docker Image | Builds the image from the `Dockerfile` |
+| Image Scan | Saves a Trivy report, then fails on fixable CRITICAL vulnerabilities |
+| Push to ECR | Logs in to ECR and pushes the unique tag |
+| Update GitOps Repo | Writes the new image into `k8s/deployment.yaml`, commits as Jenkins with `[skip ci]`, and pushes to `main` |
+
+Why the last stage exists: Argo CD only deploys what is in Git. The commit that changes the image tag is what triggers each deployment, and it also gives you a Git history of releases and a rollback by reverting a commit.
+
+Run it once now with **Build Now**, before creating the Argo CD application, so `k8s/deployment.yaml` holds a real image tag. Check ECR for the pushed tag:
+
+```bash
+aws ecr describe-images --repository-name $ECR_REPO --region $AWS_REGION --query 'imageDetails[].imageTags' --output text
+```
+
+## 7. Fix the namespace manifest
+
+`k8s/namespace.yaml` must contain the real name, not a placeholder. Kubernetes rejects uppercase names, and Argo CD shows `OutOfSync` otherwise:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: employee-directory
+  labels:
+    app.kubernetes.io/part-of: employee-directory
+```
+
+## 8. Expose the app: attach a load balancer (EKS Auto Mode)
+
+The Service of type `LoadBalancer` needs tagged public subnets and two extra settings.
+
+**8.1 Tag the cluster's public subnets** so the load balancer can be placed in them:
+
+```bash
+SUBNETS=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query 'cluster.resourcesVpcConfig.subnetIds' --output text)
+aws ec2 create-tags --region $AWS_REGION --resources $SUBNETS \
+  --tags Key=kubernetes.io/role/elb,Value=1 Key=kubernetes.io/cluster/$CLUSTER_NAME,Value=shared
+aws ec2 describe-subnets --region $AWS_REGION --subnet-ids $SUBNETS --query 'Subnets[].{ID:SubnetId,Tags:Tags}' --output json | cat
+```
+
+The tags are per cluster, so repeat this for any new cluster. A public subnet has a `0.0.0.0/0` route to an internet gateway (`igw-...`).
+
+**8.2 Set `k8s/service.yaml`.** `loadBalancerClass` hands the Service to EKS Auto Mode, and the annotation makes the load balancer internet-facing (the default is internal):
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: employee-directory
+  labels:
+    app: employee-directory
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+spec:
+  type: LoadBalancer
+  loadBalancerClass: eks.amazonaws.com/nlb
+  selector:
+    app: employee-directory
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+```
+
+Commit it to `main`. `loadBalancerClass` cannot be changed on an existing Service, so if a Service already exists, delete it after the commit and let Argo CD recreate it (see step 9).
+
+## 9. Create the Argo CD application
+
+The Application tells Argo CD which repo, branch and folder to watch and where to deploy. Without it Argo CD does nothing.
+
+```bash
+cat > employee-app.yaml <<'EOF'
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: employee-directory
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Naziya-2910/employee-directory.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: employee-directory
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+EOF
+kubectl apply -f employee-app.yaml
+```
+
+Check synchronization:
+
+```bash
+kubectl get application employee-directory -n argocd
+kubectl get pods -n employee-directory
+```
+
+The goal is `Synced` and `Healthy` with the pod `1/1 Running`. Right after creation `OutOfSync` and `Progressing` is normal for a minute.
+
+If an old Service exists without the load balancer settings, recreate it:
+
+```bash
+kubectl delete svc employee-directory -n employee-directory
+kubectl annotate application employee-directory -n argocd argocd.argoproj.io/refresh=hard --overwrite
+```
+
+## 10. Open the application
+
+**Option A: LoadBalancer (default).** Wait a few minutes for the address:
+
+```bash
+kubectl get svc -n employee-directory
+kubectl describe svc employee-directory -n employee-directory | tail -5
+```
+
+You want a `SuccessfullyReconciled` event and an `...elb.amazonaws.com` hostname under `EXTERNAL-IP`. Open `http://<hostname>/`. Use `http`, not `https`, because the Service only listens on port 80. Allow a couple more minutes for the targets to become healthy.
+
+**Option B: NodePort (no load balancer, no extra AWS cost).** Change `k8s/service.yaml` to `type: NodePort`, remove the `loadBalancerClass` line and the annotation, and commit. Then:
+
+```bash
+kubectl get svc -n employee-directory
+kubectl get nodes -o wide
+```
+
+The Service shows a port like `80:30088/TCP`; the nodes show an `EXTERNAL-IP` (public IP). Open `http://<node-public-ip>:<nodeport>/` after allowing that port (range 30000-32767) in the worker nodes' security group for your IP.
+
+**Option C: port-forward from the instance** (quick check):
+
+```bash
+kubectl port-forward svc/employee-directory -n employee-directory 8082:80 --address 0.0.0.0
+curl http://localhost:8082/healthz
+```
+
+The health check returns `{"status":"UP"}`.
+
+## 11. Test the whole flow
+
+1. On GitHub, edit one visible line under `src/main/resources/templates/` (for example the page `<title>`) and commit to `main`. Do not edit `k8s/deployment.yaml`; Jenkins changes it.
+2. In Jenkins click **Build Now**.
+3. When it finishes, `k8s/deployment.yaml` shows a new Jenkins commit such as `Update image tag to 3-abc1234 [skip ci]`.
+4. Argo CD rolls out the new pod within about 3 minutes. To speed it up:
+   ```bash
+   kubectl annotate application employee-directory -n argocd argocd.argoproj.io/refresh=hard --overwrite
+   ```
+5. Confirm the new image is running:
+   ```bash
+   kubectl get pods -n employee-directory
+   kubectl get deployment employee-directory -n employee-directory -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+   ```
+6. Reload the page with `Ctrl+Shift+R`. The footer also shows the Git commit of the running build.
+
+## 12. Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `bash: syntax error near unexpected token 'newline'` or `No such file or directory` | A `<placeholder>` was typed literally | Replace the placeholder, brackets included, with the real value |
+| `apiVersion:: command not found` | YAML pasted into the terminal | Put YAML in a file or on GitHub, not in the shell |
+| Chrome: `ERR_CERT_AUTHORITY_INVALID` on the Argo CD page | Self-signed certificate | **Advanced**, then **Proceed**; use a real certificate in production |
+| Jenkins Sonar stage: `HTTP 401 Unauthorized` | No valid SonarQube token in Jenkins | Create a token, store it as `sonar-token`, set it on `SonarQubeServer` (step 5) |
+| Jenkins push fails: `repository does not exist` | ECR repository is missing in this account or region | Create it (step 1), or fix the registry values in the `Jenkinsfile` |
+| Pod `ImagePullBackOff`, event `not found` | The image tag is not in ECR, or `deployment.yaml` has no tag | Run the pipeline so it pushes the image and writes the tag |
+| Pod `ImagePullBackOff`, event `denied` | Node role cannot pull from ECR | Attach `AmazonEC2ContainerRegistryPullOnly` to the node role |
+| Argo CD `OutOfSync`: `Namespace "NAMESPACE" is invalid` | Placeholder name in `k8s/namespace.yaml` | Set `name: employee-directory` (step 7) |
+| App `Degraded` for the wrong application | The Application points at another repo or path | Delete it and create one for this repo and the `k8s` folder |
+| Service `EXTERNAL-IP` `<pending>`, `Evaluated 0 subnets` | Subnets lack load balancer tags | Tag them (step 8.1) |
+| Still `<pending>` on EKS Auto Mode | Service lacks `loadBalancerClass` and the internet-facing annotation | Fix `service.yaml`, delete the Service, refresh (steps 8.2 and 9) |
+| Browser: `ERR_CONNECTION_REFUSED` | `https://` used, load balancer still starting, or no healthy pod | Use `http://`, wait, and check `kubectl get pods -n employee-directory` |
+| Terminal stuck on a `:` prompt | Output opened in a pager | Press `q` |
+
+To find out why a sync fails:
+
+```bash
+kubectl get application employee-directory -n argocd -o jsonpath='{range .status.resources[*]}{.kind}{"\t"}{.name}{"\t"}{.status}{"\t"}{.health.status}{"\n"}{end}'
+kubectl get application employee-directory -n argocd -o jsonpath='{.status.operationState.phase}{"\n"}{.status.operationState.message}{"\n"}'
+kubectl describe pod -n employee-directory -l app=employee-directory
+```
+
+## 13. Security notes
+
+- Never commit tokens, AWS keys or passwords. Keep them in Jenkins credentials.
+- Restrict ports 8080, 9000 and any NodePort to your own IP.
+- Remember that the Jenkins pipeline pushes to `main`. Use a token limited to this repository.
+- If SonarQube's public IP changes after a restart, update the server URL in Jenkins, or give the instance an Elastic IP.
+
+## 14. Cleanup
+
+EKS, EC2 nodes, load balancers and ECR images all cost money while they exist.
+
+```bash
+kubectl delete application employee-directory -n argocd
+```
+
+With `prune: true` this removes the pods and the Service, which releases the load balancer. Delete the rest by hand in AWS when you are finished: the EKS cluster, the Jenkins EC2 instance, the ECR repository and the subnet tags.
